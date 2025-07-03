@@ -1,0 +1,293 @@
+#!/bin/bash
+
+# Function to check if the file exists
+check_file_exists() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "File does not exist. Please try again."
+        return 1
+    fi
+    return 0
+}
+
+# Function to make the file executable
+
+make_file_executable() {
+    local file="$1"
+    if [ ! -x "$file" ]; then
+        chmod +x "$file"
+    fi
+}
+
+# Function to process the file
+process_file() {
+    local file="$1"
+
+    echo "File path: $file"
+
+    check_file_exists "$file" || return 1
+    make_file_executable "$file"
+
+    # Remove .sh extension for the destination filename
+    local base_name="$(basename "$file")"
+    local dest_name="${base_name%.sh}"
+    local dest_file="/usr/local/bin/$dest_name"
+    sudo cp "$file" "$dest_file"
+    sudo chmod +x "$dest_file"
+
+    echo "Script has been copied to $dest_file"
+    echo
+
+    # Ask for alias
+    read -p "Do you want to set a custom alias for this command? (leave blank to use '$dest_name', or type 'none' to skip alias): " alias_name
+    # Trim whitespace
+    alias_name="$(echo -e "${alias_name}" | tr -d '[:space:]')"
+
+    if [[ "$alias_name" == "none" ]]; then
+        echo "No alias will be created."
+    else
+        # Use default if still empty
+        if [[ -z "$alias_name" ]]; then
+            alias_name="$dest_name"
+        fi
+
+        # Only save if alias_name is not empty
+        if [[ -n "$alias_name" ]]; then
+            local alias_file="$HOME/.bash_aliases"
+            # Remove existing alias if present
+            sed -i "/^alias $alias_name=/d" "$alias_file"
+            # Add new alias
+            echo "alias $alias_name='$dest_name'" >> "$alias_file"
+            echo "Alias created: $alias_name → $dest_name"
+
+            # Ensure .bash_aliases is sourced
+            if ! grep -q "source ~/.bash_aliases" "$HOME/.bashrc"; then
+                echo -e "\n# Source aliases file\nif [ -f ~/.bash_aliases ]; then\n    source ~/.bash_aliases\nfi" >> "$HOME/.bashrc"
+                echo "Added source reference to .bashrc"
+            fi
+
+            echo "You may need to run 'source ~/.bashrc' or restart your terminal to use the alias."
+        fi
+    fi
+    echo
+
+    local alias_file="$HOME/.bash_aliases"
+    # Remove existing alias if present
+    sed -i "/^alias $alias_name=/d" "$alias_file"
+    # Add new alias
+    echo "alias $alias_name='$dest_name'" >> "$alias_file"
+    echo "Alias created: $alias_name → $dest_name"
+
+    # Ensure .bash_aliases is sourced
+    if ! grep -q "source ~/.bash_aliases" "$HOME/.bashrc"; then
+        echo -e "\n# Source aliases file\nif [ -f ~/.bash_aliases ]; then\n    source ~/.bash_aliases\nfi" >> "$HOME/.bashrc"
+        echo "Added source reference to .bashrc"
+    fi
+
+    echo "You may need to run 'source ~/.bashrc' or restart your terminal to use the alias."
+    echo
+}
+
+# Function to manage aliases
+# Purpose: Allows users to create, update, or remove command aliases.
+# It also ensures that the aliases are stored in a file and sourced in the user's .bashrc.
+
+manage_aliases() {
+    local alias_file="$HOME/.bash_aliases"
+
+    # Create alias file if it doesn't exist
+    if [ ! -f "$alias_file" ]; then
+        touch "$alias_file"
+    fi
+
+    # Make sure .bash_aliases is sourced in .bashrc
+    if ! grep -q "source ~/.bash_aliases" "$HOME/.bashrc"; then
+        echo -e "\n# Source aliases file\nif [ -f ~/.bash_aliases ]; then\n    source ~/.bash_aliases\nfi" >> "$HOME/.bashrc"
+        echo "Added source reference to .bashrc"
+    fi
+
+    while true; do
+        clear
+        echo
+        echo "═════════════════════════════════════════════════════════════════════════════════════"
+        echo "                             Alias Management                                        "
+        echo "═════════════════════════════════════════════════════════════════════════════════════"
+        echo
+        echo "  Options:"
+        echo
+        echo "    1. List existing aliases"
+        echo "    2. Create or update an alias"
+        echo "    3. Remove an alias"
+        echo "    4. Return to main menu"
+        echo
+        echo "─────────────────────────────────────────────────────────────────────────────────────"
+        echo
+
+        read -p "  Select an option [1-4]: " alias_option
+        echo
+
+        case $alias_option in
+            1)
+                echo "  Current aliases:"
+                echo
+                if [ -s "$alias_file" ]; then
+                    grep "^alias" "$alias_file" | sed 's/alias /    /' | sed 's/=/ → /'
+                else
+                    echo "  No aliases defined yet."
+                fi
+                ;;
+            2)
+                echo "  Existing aliases:"
+                grep "^alias" "$alias_file" | sed 's/alias \([^=]*\)=.*/    \1/' || echo "    (none)"
+                echo
+                read -p "  Enter alias name to create/update: " alias_name
+                read -p "  Enter command to alias: " alias_command
+
+                # Remove existing alias if present
+                sed -i "/^alias $alias_name=/d" "$alias_file"
+
+                # Add new alias
+                echo "alias $alias_name='$alias_command'" >> "$alias_file"
+                echo
+                echo "  Alias created/updated: $alias_name → $alias_command"
+                ;;
+            3)
+                echo "  Existing aliases:"
+                grep "^alias" "$alias_file" | sed 's/alias \([^=]*\)=.*/    \1/' || echo "    (none)"
+                echo
+                read -p "  Enter alias name to remove: " alias_name
+                if grep -q "^alias $alias_name=" "$alias_file"; then
+                    sed -i "/^alias $alias_name=/d" "$alias_file"
+                    echo "  Alias '$alias_name' removed."
+                else
+                    echo "  Alias '$alias_name' not found."
+                fi
+                ;;
+            4)
+                return
+                ;;
+            *)
+                echo "  Invalid option. Please try again."
+                ;;
+        esac
+
+        echo
+        read -p "  Press Enter to continue..."
+    done
+}
+
+# Function to find files recursively
+find_files() {
+    local search_pattern="$1"
+    
+    if [ "$search_pattern" = "sh" ]; then
+        # Find only .sh files
+        find "$(pwd)" -type f -name "*.sh" | sort
+    elif [ -z "$search_pattern" ]; then
+        # Find all executable files or scripts that look like shell scripts
+        find "$(pwd)" -type f \( -executable -o -name "*.sh" \) | sort
+    else
+        # Find files containing the pattern in name
+        find "$(pwd)" -type f -name "*${search_pattern}*" | sort
+    fi
+}
+
+# Argument Mode
+# Purpose: If a file name is provided as an argument, it processes that file.
+if [ $# -gt 0 ]; then
+    input="$1"
+    process_file "$(pwd)/$input"
+    exit 0
+fi
+
+# Interactive Mode
+# Purpose: If no argument is provided, it enters an interactive mode with recursive search
+while true; do
+    clear
+    echo
+    echo "═════════════════════════════════════════════════════════════════════════════════════"
+    echo "                            Script Registration Tool                                 "
+    echo "═════════════════════════════════════════════════════════════════════════════════════"
+    echo
+    echo "  Options:"
+    echo
+    echo "    1. List all executable files and scripts"
+    echo "    2. List only .sh files"
+    echo "    3. Search for files by name"
+    echo "    4. Manage command aliases"
+    echo "    5. Exit"
+    echo
+    echo "─────────────────────────────────────────────────────────────────────────────────────"
+    echo
+    
+    read -p "  Select an option [1-5]: " option
+    echo
+    
+    case $option in
+        1)
+            echo "  Listing all executable files and scripts:"
+            echo
+            files=($(find_files ""))
+            ;;
+        2)
+            echo "  Listing only .sh files:"
+            echo
+            files=($(find_files "sh"))
+            ;;
+        3)
+            read -p "  Enter search pattern: " pattern
+            echo
+            echo "  Searching for files containing '$pattern':"
+            echo
+            files=($(find_files "$pattern"))
+            ;;
+        4)
+            manage_aliases
+            continue
+            ;;
+        5)
+            echo "  Exiting..."
+            exit 0
+            ;;
+        *)
+            echo "  Invalid option. Please try again."
+            sleep 1
+            continue
+            ;;
+    esac
+    
+    if [ ${#files[@]} -eq 0 ]; then
+        echo "  No files found."
+        echo
+        read -p "  Press Enter to continue..."
+        continue
+    fi
+    
+    echo "  ─────────────────────────────────────────────────────────────────────────────────"
+    echo
+    for i in "${!files[@]}"; do
+        printf "    %3d. %s\n" "$((i+1))" "${files[$i]#$(pwd)/}"
+    done
+    echo
+    echo "  ─────────────────────────────────────────────────────────────────────────────────"
+    echo
+    
+    read -p "  Select a file number (or 'b' to go back): " selection
+    echo
+    
+    if [[ "$selection" == "b" ]]; then
+        continue
+    fi
+    
+    if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt "${#files[@]}" ]; then
+        echo "  Invalid selection. Please try again."
+        sleep 1
+        continue
+    fi
+    
+    file_path="${files[$((selection-1))]}"
+    process_file "$file_path"
+    
+    echo
+    read -p "  Press Enter to continue..."
+done

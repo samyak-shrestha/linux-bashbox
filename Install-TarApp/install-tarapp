@@ -1,0 +1,195 @@
+#!/bin/bash
+
+# ─────────────────────────────────────────────────────────────
+# 🔧 Smart JetBrains-style .tar.gz Installer
+# This script extracts .tar.gz apps (e.g., Android Studio, PyCharm)
+# and installs them to /opt, setting up a .desktop file and launcher.
+# Supports: icon detection, executable selection, progress fallback.
+# Author: Samyak Shrestha
+# License: MIT
+# ─────────────────────────────────────────────────────────────
+
+echo "🔧 Smart JetBrains-style .tar.gz Installer (App-name safe & formatted)"
+
+# STEP 1: List .tar.gz files
+mapfile -t tar_files < <(ls *.tar.gz 2>/dev/null)
+if [[ ${#tar_files[@]} -eq 0 ]]; then
+    echo "❌ No .tar.gz files found in this directory."
+    exit 1
+fi
+
+# Prompt user to select a file
+echo "📦 Available .tar.gz files:"
+for i in "${!tar_files[@]}"; do
+    echo "$((i+1)). ${tar_files[$i]}"
+done
+echo "0. Exit"
+
+read -rp "👉 Enter the number to install (or 0 to exit): " choice
+if [[ "$choice" == "0" ]]; then
+    echo "👋 Exiting."
+    exit 0
+fi
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#tar_files[@]} )); then
+    echo "❌ Invalid choice."
+    exit 1
+fi
+
+tar_file="${tar_files[$((choice-1))]}"
+echo "✅ Selected: $tar_file"
+
+# STEP 2: App name input and formatting
+read -rp "📛 Enter Application Name (e.g., android-studio or PyCharm): " app_input
+[[ -z "$app_input" ]] && echo "❌ App name is required." && exit 1
+
+# Normalize names: lowercase-hyphen for folder, PascalCase for UI
+app_folder_name=$(echo "$app_input" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+app_display_name=$(echo "$app_input" | sed -E 's/[-_]/ /g' | sed -E 's/\b(.)/\U\1/g')
+
+# STEP 3: Install directory
+read -rp "📁 Installation directory [/opt]: " install_dir
+install_dir="${install_dir:-/opt}"
+final_path="$install_dir/$app_folder_name"
+
+# STEP 4: Extract with progress or fallback
+temp_dir=$(mktemp -d)
+echo "📤 Extracting $tar_file..."
+
+if command -v pv &> /dev/null; then
+    echo "📈 Using pv for progress bar..."
+    pv "$tar_file" | tar xzf - -C "$temp_dir"
+else
+    echo "⚠️ 'pv' (pipe viewer) not found."
+    read -rp "💡 Do you want to install 'pv' for progress tracking? (y/n): " install_pv
+    if [[ "$install_pv" =~ ^[Yy]$ ]]; then
+        echo "📦 Installing pv..."
+        sudo apt install pv -y
+
+        if command -v pv &> /dev/null; then
+            echo "✅ pv installed. Extracting with progress..."
+            pv "$tar_file" | tar xzf - -C "$temp_dir"
+        else
+            echo "❌ Failed to install pv. Falling back..."
+        fi
+    fi
+
+    if ! command -v pv &> /dev/null; then
+        echo "🔄 Extracting with basic spinner (no progress %)..."
+        (
+            tar -xzf "$tar_file" -C "$temp_dir" &
+            pid=$!
+            spin='-\|/'
+            i=0
+            while kill -0 $pid 2>/dev/null; do
+                i=$(( (i+1) %4 ))
+                printf "\r🕐 Extracting... ${spin:$i:1}"
+                sleep 0.2
+            done
+            wait $pid
+        )
+        echo -e "\r✅ Extraction completed."
+    fi
+fi
+
+# STEP 5: Move to /opt/
+extracted_folder=$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d)
+echo "🚚 Moving extracted folder to $final_path..."
+sudo mv "$extracted_folder" "$final_path"
+
+# STEP 6: Choose .sh executable from /bin
+sh_files=()
+while IFS= read -r file; do sh_files+=("$file"); done < <(find "$final_path/bin" -maxdepth 1 -type f -name "*.sh")
+
+if [[ ${#sh_files[@]} -eq 0 ]]; then
+    echo "❌ No .sh files found inside /bin."
+    exit 1
+fi
+
+echo "⚙️ Found executable scripts:"
+for i in "${!sh_files[@]}"; do
+    echo "$((i+1)). $(basename "${sh_files[$i]}")"
+done
+
+# Try to guess match by name
+exec_guess=-1
+for i in "${!sh_files[@]}"; do
+    fname=$(basename "${sh_files[$i]}")
+    if [[ "$fname" == "${app_folder_name}.sh" ]]; then
+        exec_guess=$i
+        break
+    fi
+done
+
+[[ $exec_guess -ge 0 ]] && echo "🎯 Suggested: $((exec_guess+1)). ${sh_files[$exec_guess]}"
+
+read -rp "👉 Choose executable number [${exec_guess:+$((exec_guess+1))}]: " exec_choice
+exec_choice=${exec_choice:-$((exec_guess+1))}
+
+if ! [[ "$exec_choice" =~ ^[0-9]+$ ]] || (( exec_choice < 1 || exec_choice > ${#sh_files[@]} )); then
+    echo "❌ Invalid choice."
+    exit 1
+fi
+
+exec_rel="bin/$(basename "${sh_files[$((exec_choice-1))]}")"
+exec_path="$final_path/$exec_rel"
+chmod +x "$exec_path"
+
+# STEP 7: Choose icon (.png)
+png_files=()
+while IFS= read -r file; do png_files+=("$file"); done < <(find "$final_path/bin" "$final_path" -type f -name "*.png")
+
+icon_path=""
+if [[ ${#png_files[@]} -gt 0 ]]; then
+    echo "🖼️ Found icons:"
+    for i in "${!png_files[@]}"; do
+        echo "$((i+1)). $(basename "${png_files[$i]}")"
+    done
+
+    icon_guess=-1
+    for i in "${!png_files[@]}"; do
+        fname=$(basename "${png_files[$i]}")
+        if [[ "$fname" == "${app_folder_name}.png" ]]; then
+            icon_guess=$i
+            break
+        fi
+    done
+
+    [[ $icon_guess -ge 0 ]] && echo "🎯 Suggested: $((icon_guess+1)). ${png_files[$icon_guess]}"
+
+    read -rp "👉 Choose icon number [${icon_guess:+$((icon_guess+1))}], or leave blank to skip: " icon_choice
+    if [[ -n "$icon_choice" ]]; then
+        if ! [[ "$icon_choice" =~ ^[0-9]+$ ]] || (( icon_choice < 1 || icon_choice > ${#png_files[@]} )); then
+            echo "⚠️ Invalid icon choice — skipping."
+        else
+            icon_rel="${png_files[$((icon_choice-1))]#$final_path/}"
+            icon_path="$final_path/$icon_rel"
+        fi
+    elif [[ $icon_guess -ge 0 ]]; then
+        icon_rel="${png_files[$icon_guess]#$final_path/}"
+        icon_path="$final_path/$icon_rel"
+    fi
+fi
+
+# STEP 8: Create desktop entry
+desktop_file="/usr/share/applications/${app_folder_name}.desktop"
+echo "📝 Creating .desktop file: $desktop_file"
+
+sudo bash -c "cat > '$desktop_file'" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$app_display_name
+Exec=$exec_path
+Icon=$icon_path
+Comment=$app_display_name installed from $tar_file
+Categories=Development;Utility;
+Terminal=false
+StartupNotify=true
+EOF
+
+sudo chmod +x "$desktop_file"
+
+# ✅ Done
+echo "✅ Installed: $app_display_name"
+echo "📂 Folder: $final_path"
+echo "📄 Shortcut: $desktop_file"
